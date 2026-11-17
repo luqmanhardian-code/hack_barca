@@ -1,0 +1,634 @@
+================================================================================
+SECTION: 1. DATA DIRECTORY TREE
+================================================================================
+  data/README.md (0.00 MB)
+  data/broadcast/BAR-ATH_broadcast_atd.txt (135.39 MB)
+  data/broadcast/BAR-ATH_broadcast_atd.xml (0.06 MB)
+  data/broadcast/BAR-ATH_broadcast_homography.csv (14.69 MB)
+  data/tactical/BAR-ATH_tactical_atd.txt (186.65 MB)
+  data/tactical/BAR-ATH_tactical_atd.xml (0.06 MB)
+  data/tactical/BAR-ATH_tactical_homography.csv (22.11 MB)
+  data/tactical/BAR-ATH_tactical_smart_tagging.xml (0.25 MB)
+
+================================================================================
+SECTION: 2. REPO HELPER & EVALUATION SCRIPTS
+================================================================================
+
+--- FILE: games.py (exists=True) ---
+"""Per-game constants shared by the evaluation scripts and the starter tooling.
+
+This module deliberately imports nothing beyond the standard library, so it can be loaded by any
+interpreter and by code that has no numpy or pandas available.
+
+The alignment is per half: id_frame = video_frame + OFFSETS[half]. The two halves genuinely
+disagree, so no single integer offset is frame-accurate for both, and frame accuracy is what the
+evaluation in evaluation/ needs -- a one-frame error moves every transition it scores.
+
+Everything a submission contains is indexed by *video* frame. The alignment below only matters
+when you read the tracking data, which runs on its own counter.
+
+Data location
+-------------
+The match assets are gated: they are not in this repository. Download them (see DATA.md) and put
+them in ./data, or point MTAH_DATA_DIR somewhere else:
+
+    export MTAH_DATA_DIR=/path/to/mtah2027        # macOS / Linux
+    $env:MTAH_DATA_DIR = "D:\\mtah2027"           # Windows PowerShell
+
+The evaluation itself needs none of this -- it reads only CSVs -- so a missing data directory is
+not an error here.
+"""
+
+import os
+
+GAME = "BAR-ATH"
+
+# Root of the downloaded data bundle. Nothing in this module opens it; the paths below are built
+# so that tooling which does need the video has one place to look.
+DATA_DIR = os.environ.get("MTAH_DATA_DIR") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data")
+
+GAMES = {
+    "BAR-ATH": {
+        # The match comes from two cameras, each with its own folder, its own stem and its own
+        # timeline -- see SOURCES below and asset_paths(). The tactical video is the frame index
+        # authority for this challenge: row i of a submission is frame i of that file. The
+        # broadcast recording is an optional extra input and is NOT aligned to it.
+        #
+        # n_video_frames, fps and pitch describe the TACTICAL source, because that is the
+        # submission contract; per-source counts live in SOURCES.
+        "n_video_frames": 199319,
+        "fps": 25,
+        # id_frame = video_frame + offsets[half], measured frame by frame against the video.
+        #
+        # The halves differ by one frame. A single offset therefore cannot be exact for both,
+        # which is why this is a per-half table and not a scalar. It started life as one number
+        # (1702056) derived from the first-half kickoff, which was good enough for watching the
+        # video and not good enough for scoring transition timing to the frame.
+        "offsets": {1: 1702057, 2: 1702058},
+        # IdFrame span of each half, read off the two contiguous blocks in the tracking data (the
+        # only gap is halftime). These are what decide which offset applies to a frame, so they
+        # are data, not decoration.
+        "halves": {1: (1713242, 1792708), 2: (1812866, 1892255)},
+        # Kickoff anchors, kept as convenient playback start positions. They are observations
+        # about the video -- "the ball is struck on this frame" -- so they do not move when the
+        # offsets are corrected, and they do not feed the offsets.
+        "kickoff": {"minute": 7, "second": 27, "frame": 11},
+        "kickoff_2nd": {"minute": 75, "second": 49, "frame": 16},
+        # Real pitch size in metres.
+        "pitch": (105.3, 68.0),
+    },
+}
+
+# The anchors above are expressed as (minute, second, frame) at 25 fps, which is the rate the
+# burned-in clock and the tracking counter both run at. This is a property of the anchor notation,
+# not of the video file, so it stays a literal here rather than being read from the game entry.
+ANCHOR_FPS = 25
+
+# The two recordings of the match, each in its own folder with its own stem. Splitting the bundle
+# by source rather than by asset type is what keeps "which timeline is this file on?" answerable
+# from the path alone -- the question that matters most here, because a submission is indexed to
+# the tactical video and to nothing else.
+#
+# The source is repeated in the file name as well as the folder so that a file which gets copied
+# out of its directory is still identifiable. That redundancy is deliberate.
+SOURCES = {
+    "tactical": {
+        "stem": "BAR-ATH_tactical",
+        "n_video_frames": 199319,
+        # Smart Tagging is timed against the tactical video, so it belongs to this source only.
+        "assets": ("video", "atd_meta", "atd_raw", "homography", "smart_tagging"),
+    },
+    "broadcast": {
+        "stem": "BAR-ATH_broadcast",
+        "n_video_frames": 164488,
+        "assets": ("video", "atd_meta", "atd_raw", "homography"),
+    },
+}
+DEFAULT_SOURCE = "tactical"
+
+# Asset name -> file name suffix. One table so a rename in the bundle is one edit here and nothing
+# anywhere else spells a filename out.
+SUFFIXES = {
+    "video": ".mp4",
+    "atd_meta": "_atd.xml",
+    "atd_raw": "_atd.txt",
+    "homography": "_homography.csv",
+    "smart_tagging": "_smart_tagging.xml",
+}
+
+
+def asset_paths(game=GAME, data_dir=None, source=DEFAULT_SOURCE):
+    """Every provided file for one source of a game, keyed by asset, under DATA_DIR.
+
+    The bundle is one folder per recording:
+
+        data/
+        |-- tactical/                           the evaluation reference
+        |   |-- BAR-ATH_tactical.mp4
+        |   |-- BAR-ATH_tactical_atd.xml        FIFA/EPTS metadata
+        |   |-- BAR-ATH_tactical_atd.txt        FIFA/EPTS raw tracking, players and ball
+        |   |-- BAR-ATH_tactical_homography.csv
+        |   `-- BAR-ATH_tactical_smart_tagging.xml
+        `-- broadcast/                          optional, NOT aligned to tactical
+            |-- BAR-ATH_broadcast.mp4
+            |-- BAR-ATH_broadcast_atd.xml
+            |-- BAR-ATH_broadcast_atd.txt
+            `-- BAR-ATH_broadcast_homography.csv
+... [TRUNCATED: 112 more lines] ...
+
+--- FILE: starter/load_atd.py (exists=True) ---
+"""Load the provided Automatic Tracking Data and line it up with the video frames you submit.
+
+The ATD is Metrica's FIFA/EPTS export -- a metadata XML plus a raw text file:
+
+    data/tactical/BAR-ATH_tactical_atd.xml
+    data/tactical/BAR-ATH_tactical_atd.txt
+
+games.asset_paths() builds both, so nothing here spells a filename out.
+
+The match was recorded twice and each recording has its own ATD. This module defaults to the
+tactical one, because that is the recording a submission is indexed to. The broadcast ATD is a
+separate 164488-frame dataset on its own timeline:
+
+    load(source="broadcast")
+
+kloppy reads that pair directly, so this module is thin on purpose. What it adds is the part that
+is easy to get wrong and expensive to notice: the join between tracking frames and video frames.
+
+    pip install -r requirements-starter.txt
+    python starter/load_atd.py                  # prints a summary and a few aligned frames
+
+What you actually need to know
+------------------------------
+The ATD is **already on the video's timeline**, one record per video frame, 199319 of them. The
+only catch is that it counts from 1 where your submission counts from 0:
+
+    video_frame = frame_id - 1
+
+That is the whole alignment story for participants. You do not need the per-half offsets in
+games.py -- those describe the separate counter the ground truth was derived from, which you never
+see. Verified on the delivered file: 199319 records numbered 1..199319, with 21-22 tracked objects
+during play and almost none across the halftime break, exactly where the ground truth says the
+match is not being played.
+"""
+
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+from games import GAME, GAMES, DEFAULT_SOURCE, require, source_frames  # noqa: E402
+
+# Params
+# Raw ATD line: "<frame_id>:<player>;<player>;...:<ball>". Only the part before the first
+# separator is needed to check the alignment.
+FIELD_SEP = ":"
+
+
+def atd_paths(game=GAME, data_dir=None, source=DEFAULT_SOURCE):
+    """(meta_data, raw_data) paths, or a readable error naming what is missing."""
+    return tuple(require(["atd_meta", "atd_raw"], game, data_dir, source))
+
+
+def load(game=GAME, data_dir=None, source=DEFAULT_SOURCE):
+    """The ATD as a kloppy TrackingDataset.
+
+    Coordinates come back in kloppy's Metrica convention. The real pitch is
+    GAMES[game]["pitch"] metres, which is what you want for anything measured in metres rather
+    than in fractions of a pitch.
+    """
+    try:
+        from kloppy import metrica
+    except ImportError:
+        raise ImportError(
+            "kloppy is not installed. It is optional -- the evaluation needs only numpy and "
+            "pandas -- but this loader needs it:\n    pip install -r requirements-starter.txt")
+
+    meta, raw = atd_paths(game, data_dir, source)
+    return metrica.load_tracking_epts(meta_data=meta, raw_data=raw)
+
+
+def video_frame_of(frame_id):
+    """Video frame -- and therefore submission row -- of an ATD record."""
+    return int(frame_id) - 1
+
+
+def frame_id_of(video_frame):
+    """ATD frame_id of a video frame. The inverse of video_frame_of."""
+    return int(video_frame) + 1
+
+
+def check_alignment_raw(game=GAME, data_dir=None, source=DEFAULT_SOURCE):
+    """The same check as check_alignment, straight off the raw file. No kloppy, no full load.
+
+    Loading 199319 frames x 46 slots through kloppy to count them costs minutes and gigabytes;
+    the raw file answers the same question in one streaming pass, because every line begins with
+    its own frame id. Use this one unless you already have a dataset in hand.
+    """
+    raw_path = require(["atd_raw"], game, data_dir, source)[0]
+    expected = source_frames(source, game)
+
+    first = last = None
+    count = 0
+    with open(raw_path) as handle:
+        for line in handle:
+            frame_id = int(line[:line.index(FIELD_SEP)])
+            if first is None:
+                first = frame_id
+            last = frame_id
+            count += 1
+
+    contiguous = count > 0 and last - first + 1 == count
+    return {
+        "n_records": count,
+        "n_video_frames": expected,
+        "frame_id_range": (first, last),
+        "contiguous": contiguous,
+        "first_video_frame": video_frame_of(first) if first is not None else None,
+        "agrees": count == expected and contiguous and first == 1,
+    }
+
+
+def check_alignment(dataset, game=GAME, source=DEFAULT_SOURCE):
+    """Confirm the ATD really is one record per video frame, numbered from 1.
+
+    Cheap, and worth running once against any new export rather than trusting the note above.
+    Two claims, both falsifiable: the record count equals the video length, and the ids are
+    exactly 1..n with nothing missing.
+    """
+... [TRUNCATED: 46 more lines] ...
+
+--- FILE: starter/load_smart_tagging.py (exists=True) ---
+"""Read the Smart Tagging XML and convert its intervals to video frames.
+
+Smart Tagging is Metrica's automatic tactical annotation of the tactical video: phases of play and
+set pieces, each an interval with a code and a set of labels. It is a SportsCode XML file, so this
+needs nothing but the standard library.
+
+    python starter/load_smart_tagging.py
+
+What it is good for: every phase carries a Team tag, and every set piece is a restart at the end
+of a dead-ball stretch. That is a free prior on both halves of the label you are producing.
+
+What it is not: ground truth. It is inferred automatically and contains false positives and false
+negatives, and its intervals are *phases*, not possessions -- a Build Up can span one possession,
+stop short of one, or cover two. Copy an interval across as a label and you inherit its errors.
+
+TIME BASE, verified on the delivered file: <start> and <end> are seconds from the first frame of
+the tactical video, so seconds x 25 is a video frame and nothing else is needed. Both tagged
+kickoffs contain the real one. check_time_base() is that check, kept so it runs again if the
+export ever changes.
+"""
+
+import os
+import sys
+import xml.etree.ElementTree as ET
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+from games import GAME, GAMES, require  # noqa: E402
+
+# Params
+# Codes in the file are upper case ("SET PIECES"), tag values are title case ("Kick Off (Start)").
+# Matched case-insensitively here so a change in the export does not silently stop matching.
+KICKOFF_CODE = "set pieces"
+KICKOFF_TYPE = "kick off (start)"
+
+# Where each half actually starts. Both numbers are published, in DATA.md and FAQ.md: the first is
+# the first graded frame of the match, the second is the second-half kickoff. The tagging marks a ~5 s window around the restart rather than the instant, so the
+# check below is containment, not equality.
+KICKOFF_VIDEO_FRAMES = {"1st Half": 11185, "2nd Half": 113742}
+
+
+def pattern_path(game=GAME, data_dir=None):
+    """Path to the Smart Tagging XML, with a readable error if it is not there."""
+    return require(["smart_tagging"], game, data_dir)[0]
+
+
+def load(game=GAME, data_dir=None, fps=None):
+    """[{code, start_frame, end_frame, start_s, end_s, tags}] in file order.
+
+    Frames are half-open on the right the way the rest of this repository treats intervals, so
+    end_frame is the first frame *after* the phase. Rounding is to the nearest frame: the tags are
+    accurate to about a second, so a half-frame either way is not the error that matters.
+    """
+    fps = fps or GAMES[game]["fps"]
+    out = []
+    for instance in ET.parse(pattern_path(game, data_dir)).iter("instance"):
+        start_s = float(instance.findtext("start"))
+        end_s = float(instance.findtext("end"))
+        out.append({
+            "code": instance.findtext("code"),
+            "start_s": start_s,
+            "end_s": end_s,
+            "start_frame": int(round(start_s * fps)),
+            "end_frame": int(round(end_s * fps)),
+            # A group can legitimately appear more than once; last one wins, which is fine for
+            # the single-valued groups (Team, Half, Type) this file uses.
+            "tags": {label.findtext("group"): label.findtext("text")
+                     for label in instance.findall("label")},
+        })
+    return out
+
+
+def check_time_base(events):
+    """Do the tagged kickoffs land on the real ones? One row per half.
+
+    Containment rather than equality: the tagging marks a window around the restart, not the
+    instant of it, so "the real kickoff frame falls inside the tagged interval" is the strongest
+    claim the data supports -- and it is enough to prove the two clocks agree.
+    """
+    kickoffs = [event for event in events
+                if (event["code"] or "").strip().lower() == KICKOFF_CODE
+                and (event["tags"].get("Type") or "").strip().lower() == KICKOFF_TYPE]
+
+    rows = []
+    for half in sorted(KICKOFF_VIDEO_FRAMES):
+        truth = KICKOFF_VIDEO_FRAMES[half]
+        tagged = [event for event in kickoffs if event["tags"].get("Half") == half]
+        hit = next((event for event in tagged
+                    if event["start_frame"] <= truth <= event["end_frame"]), None)
+        rows.append({
+            "half": half,
+            "true_kickoff_frame": truth,
+            "tagged": [(event["start_frame"], event["end_frame"]) for event in tagged],
+            "contains_kickoff": hit is not None,
+        })
+    return {
+        "n_kickoff_tags": len(kickoffs),
+        "halves": rows,
+        "agrees": all(row["contains_kickoff"] for row in rows),
+    }
+
+
+if __name__ == '__main__':
+    events = load()
+    print("loaded {} Smart Tagging instances".format(len(events)))
+
+    counts = {}
+    for event in events:
+        counts[event["code"]] = counts.get(event["code"], 0) + 1
+    print("\ncodes")
+    for code in sorted(counts, key=lambda c: -counts[c]):
+        print("  {:<34} {:>4}".format(code, counts[code]))
+
+    teams = sorted({event["tags"].get("Team") for event in events} - {None})
+    print("\nTeam tag values: {}".format(teams))
+    print("  map these to H and A yourself -- the XML names clubs, the submission wants a side")
+
+    report = check_time_base(events)
+    print("\ntime base check  ({} 'Kick Off (Start)' tags in the file)".format(
+... [TRUNCATED: 11 more lines] ...
+
+--- FILE: evaluation/validate_submission.py (exists=True) ---
+"""Check a submission file before you send it. No ground truth needed.
+
+Run this on every file you are about to submit. It applies exactly the same validation the
+official scorer applies, so a file that passes here will not be rejected there -- and a file that
+fails here would have been silently dropped from the board with a one-line reason nobody would
+have read in time.
+
+    python evaluation/validate_submission.py my_submission.csv
+    python evaluation/validate_submission.py my_submission.csv --rows 199319
+
+On success it also prints what the file actually says -- label counts, how many possessions it
+reports and how long they are. That second half is worth reading. A file can be perfectly valid
+and still claim the match had 900 possessions of 5 seconds each, and the format checker is the
+earliest place you can notice.
+"""
+
+import argparse
+import os
+import sys
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
+
+import possession_metrics as pm  # noqa: E402  (needs the path above)
+from games import GAME, GAMES  # noqa: E402
+
+
+def describe(codes, fps):
+    """What the submission claims, in the terms a football analyst would use.
+
+    Runs are the file's own non-X spans, because without a ground truth there is nothing else to
+    take them from. That makes an abstention a gap, so 'H X X H' counts as two possessions here
+    where the official scorer, which knows the truth is continuous there, fills the gap and counts
+    one. The difference only shows up in files that actually contain X, and it is flagged below.
+    """
+    runs = pm.valid_runs(codes)
+    spells = pm.possession_spells(codes, runs)
+    n_alive = int(np.sum((codes == pm.H) | (codes == pm.A)))
+    mean_duration = (n_alive / float(fps) / len(spells)) if len(spells) else 0.0
+    return len(spells), mean_duration
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("submission", help="the frame,label CSV to check")
+    parser.add_argument("--rows", type=int, default=GAMES[GAME]["n_video_frames"],
+                        help="expected row count (default: this match's video length)")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.submission):
+        print("FAIL  no such file: {}".format(args.submission))
+        sys.exit(1)
+
+    try:
+        table = pm.read_label_csv(args.submission)
+    except Exception as error:  # unparseable CSV, missing columns, unreadable file
+        print("FAIL  {}".format(os.path.basename(args.submission)))
+        print("      could not read: {}".format(error))
+        print("\nExpected a CSV with a header line 'frame,label' and one row per video frame.")
+        sys.exit(1)
+
+    reason = pm.validate_submission(table, args.rows)
+    if reason:
+        print("FAIL  {}".format(os.path.basename(args.submission)))
+        print("      {}".format(reason))
+        print("\nSee SUBMISSION.md for the contract. The usual causes are an off-by-one at the "
+              "start or end of\nthe file, a missing header, and blank cells where the system had "
+              "no answer -- write X instead.")
+        sys.exit(1)
+
+    codes = pm.label_codes(table)
+    fps = GAMES[GAME]["fps"]
+    n_spells, mean_duration = describe(codes, fps)
+
+    print("OK    {}".format(os.path.basename(args.submission)))
+    print("      {} rows, frame 0..{}".format(len(codes), len(codes) - 1))
+    print("\n      label counts")
+    for index, name in enumerate(pm.LABELS):
+        count = int(np.sum(codes == index))
+        print("        {}  {:>7}  {:5.1f}%".format(name, count, 100.0 * count / len(codes)))
+    print("\n      reports {} possessions of mean {:.1f} s".format(n_spells, mean_duration))
+    if int(np.sum(codes == pm.X)):
+        print("      (counted with each X as a gap; the scorer bridges abstentions inside a real")
+        print("       possession, so its count can be lower than this one)")
+    print("\nValid. Note this checks the format only -- it says nothing about whether the labels "
+          "are right.\nScore it against the public ground truth with run_evaluation.py.")
+
+--- FILE: evaluation/run_evaluation.py (exists=True) ---
+"""Score every submission in ./results/ against the ground truth and print a ranked scoreboard.
+
+Submissions are frame,label CSVs with one row per video frame, exactly as long as the ground
+truth, using the H/A/D/X alphabet. Anything in ./results/ ending in .csv is treated as an entry.
+
+Ranking is on spellF1 -- the mean possession-spell F1 over IoU 0.3..0.7 -- ties broken by macro-F1
+over {H, A, D}, then transition F1 at the loose tolerance, then mean absolute latency, then
+filename so the order is never arbitrary. See possession_metrics.py for why possessions are scored
+as intervals rather than frames, why macro-F1 and not accuracy, and for the noise floor on
+comparisons.
+
+A submission that fails validation is skipped and listed at the bottom with the reason, rather
+than aborting the run -- one malformed file must not hide everyone else's results. The exit code
+is 1 if anything was skipped. A broken *ground truth* is fatal, because it invalidates every
+score rather than one.
+
+The ground truth is chosen by name, not by path: --gt public is the 5-minute slice that ships
+with the repository and is the default, --gt private is the full match and only exists on an
+organiser's machine. A path still works if you have one somewhere else.
+
+Usage:
+    python run_evaluation.py                         # scored on the public 5 minutes
+    python run_evaluation.py --gt private            # organisers: the full match
+    python run_evaluation.py --bootstrap 1000        # confidence intervals; do this before
+                                                     # believing any gap on the 5-minute sample
+    python run_evaluation.py --results some/dir --gt some/other_gt.csv
+"""
+
+import argparse
+import glob
+import json
+import os
+import sys
+
+import possession_metrics as pm
+
+# Load Data
+HERE = os.path.dirname(os.path.abspath(__file__))
+GT_DIR = os.path.join(HERE, "gt")
+RESULTS_DIR = os.path.join(HERE, "results")
+
+# Params
+# --gt takes a name, not a path. 'public' is the 5-minute slice that ships with the repository;
+# 'private' is the full match and exists only on an organiser's machine. Naming them rather than
+# globbing for whatever is in gt/ means the two can sit side by side without the default quietly
+# changing meaning when the second one appears.
+GT_ALIASES = {
+    "public": ("*_possession_gt_public.csv",
+               "The public ground truth ships with this repository. If it is missing, re-clone."),
+    "private": ("*_possession_gt.csv",
+                "The full-match ground truth is private and is not in this repository. If you are "
+                "an organiser, put it in gt/; otherwise you want --gt public."),
+}
+DEFAULT_GT = "public"
+
+OUT_DIR = HERE
+REPORTS_DIRNAME = "reports"
+NAME_WIDTH = 24  # longer submission names are truncated with a trailing ~ to keep the table narrow
+
+# Which metric orders the board. spell_f1_mean, because possession is an interval concept in
+# football and that metric counts each possession once, where macro_f1 is dominated by the great
+# majority of frames sitting in the middle of a possession. Set to "macro_f1" to rank on the
+# frame-level view instead; everything else on the board is unaffected either way.
+#
+# The switch costs nothing in discrimination: spell_f1_mean's bootstrap band is 3-4x wider than
+# macro_f1's (~0.036 vs ~0.01) but the gaps widen in proportion, so 5 of 10 adjacent pairs are
+# statistically indistinguishable under either choice.
+RANK_METRIC = "spell_f1_mean"
+# Noise band of the ranking metric, printed as a caveat so a third-decimal gap is not read as a
+# result. Keyed by metric so it stays correct if RANK_METRIC changes.
+RANK_NOISE_BAND = {"spell_f1_mean": pm.SPELL_NOISE_BAND, "macro_f1": 0.01}
+
+# SPELL_NOISE_BAND was measured over a full match's possessions. The band scales with how many
+# there are, so it is not transferable to a short ground truth: on the 5-minute slice shipped with
+# this repository the real band is several times wider, and printing "~0.04" would understate it
+# by an order of magnitude.
+#
+# Below this many possessions the header says the quoted band does not apply rather than quoting a
+# number that would mislead, and switches to the measured spread as soon as --bootstrap provides
+# one. The threshold is a round number chosen well above the public slice and well below a full
+# match; nothing depends on its exact value.
+SPELL_NOISE_BAND_MIN_POSSESSIONS = 100
+
+# Flat columns for scoreboard.csv. Tau-dependent ones are appended per tolerance in
+# scoreboard_columns(), so changing TAUS does not mean editing this tuple.
+# The four columns the printed board leads with come first and use the board's own header names,
+# so a column found on screen is findable in the CSV by the same word. The rest follow in rough
+# order of how often they get looked at.
+BASE_COLS = (
+    "rank", "submission", "status", "reason",
+    "macro_f1", "spell_f1_mean", "poss", "dur",
+    "n_gt_spells", "gt_mean_spell_duration_s", "spell_count_error",
+    "spell_f1_at_headline", "spell_iou_headline",
+    "spell_bootstrap_low", "spell_bootstrap_high",
+    "bootstrap_low", "bootstrap_high", "kappa", "accuracy",
+    "f1_H", "f1_A", "f1_D",
+    "precision_H", "recall_H", "precision_A", "recall_A", "precision_D", "recall_D",
+    "alive_dead_f1", "team_acc_gt_alive", "team_acc_both_alive",
+    "gt_home_share", "pred_home_share", "share_err", "share_defined",
+    "mean_latency", "median_latency", "mean_abs_latency", "p90_abs_latency",
+    "n_matched", "n_missed", "n_spurious", "n_ambiguous",
+    "n_gt_segments", "n_pred_segments", "fragmentation",
+    "n_graded", "n_abstain_on_graded",
+)
+TRANSITION_COLS = ("trans_f1", "trans_precision", "trans_recall")
+
+
+def scoreboard_columns(taus):
+    return BASE_COLS + tuple("{}_{}".format(col, tol) for tol in taus for col in TRANSITION_COLS)
+
+
+def find_gt(gt_arg):
+    """Resolve --gt: the word 'public', the word 'private', or a path.
+
+    Two ground truths live in gt/ and which one you meant is never obvious from a filename, so
+    they are named rather than pointed at. The default is public, because that is the only one a
+    participant has and the only one that is safe to leave as a default.
+    """
+    if gt_arg not in GT_ALIASES:
+        if not os.path.isfile(gt_arg):
+... [TRUNCATED: 463 more lines] ...
+
+================================================================================
+SECTION: 3. ATD TRACKING DATA SCHEMA
+================================================================================
+load_atd attributes: ['DEFAULT_SOURCE', 'FIELD_SEP', 'GAME', 'GAMES', 'HERE', 'ROOT', 'atd_paths', 'check_alignment', 'check_alignment_raw', 'frame_id_of', 'load', 'os', 'require', 'source_frames', 'sys', 'video_frame_of']
+
+================================================================================
+SECTION: 4. SMART TAGGING DATA SCHEMA
+================================================================================
+load_smart_tagging attributes: ['ET', 'GAME', 'GAMES', 'HERE', 'KICKOFF_CODE', 'KICKOFF_TYPE', 'KICKOFF_VIDEO_FRAMES', 'ROOT', 'check_time_base', 'load', 'os', 'pattern_path', 'require', 'sys']
+
+================================================================================
+SECTION: 5. PUBLIC GT & BASELINE SUBMISSION FORMAT
+================================================================================
+
+--- CSV: evaluation/gt/BAR-ATH_possession_gt_public.csv (exists=True) ---
+shape=(199319, 2), columns=['frame', 'label']
+frame min=0, max=199318
+label counts={'X': 191819, 'H': 3454, 'A': 2577, 'D': 1469}
+ frame label
+     0     X
+     1     X
+     2     X
+     3     X
+     4     X
+
+--- CSV: evaluation/results/baseline_raw.csv (exists=True) ---
+shape=(199319, 2), columns=['frame', 'label']
+frame min=0, max=199318
+label counts={'D': 85831, 'H': 63964, 'A': 49524}
+ frame label
+     0     D
+     1     D
+     2     D
+     3     D
+     4     D
